@@ -43,7 +43,37 @@ Ubuntu需要开启SSH服务，作为SSH服务器
    1. 修改配置文件：`sudo vim /etc/ssh/sshd_config`，文件末尾添加`PermitRootLogin yes`
    2. 重启SSH服务，使修改生效：`sudo service ssh restart`
 
-### 宿主机设置
+### windows宿主机设置
 
 确保开启SSH服务即可，连接失败的话，检查两侧防火墙，TCP/UDP端口22开放情况
+
+## Samba设置
+
+使用Samba可以很方便的实现宿主机和虚拟机的文件互传，我们可以将虚拟机的文件路径映射到宿主机的磁盘中，在宿主机上就可以在这个路径操作虚拟机的文件
+
+### Ubuntu配置
+
+1. 安装samba：`sudo apt install samba`
+2. 创建目录，用于共享，比如在用户目录下创建：`mkdir ~/share`；给共享目录足够的权限：`chmod -R 777 ~/share`
+3. 修改samba配置，可以先备份原有配置：`cp /etc/samba/smb.conf ~/`；接着修改配置文件：`sudo vim /etc/samba/smb.conf`，在文件末尾添加配置，例如：
+
+```
+[share]
+        comment = My Share
+        path = /home/cai/share  # 共享目录路径
+        browseable = yes
+        writable = yes          # 是否可写
+```
+
+4. 设置samba用户名和密码：`sudo smbpasswd -a <name>`，`<name>`替换为自己想设置的用户名，按提示输入密码即可
+5. 启用samba服务：`sudo systemctl start smbd.service`；验证服务是否启用：`sudo systemctl status smbd.service`
+6. 设置开机自启动：`sudo systemctl enable smbd.service`
+
+### windows宿主机配置
+
+windows一般是默认开启SMB服务的
+
+打开文件资源管理器，输入路径：`\\unbuntuIP`，比如我的是`\\192.168.0.106`，输入上边步骤4设置的用户名和密码，即可看到上边设置的共享目录
+
+可以选择将其映射到网络驱动，方便后续访问，这里不赘述
 
