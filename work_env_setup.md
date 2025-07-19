@@ -24,3 +24,7 @@
 
 ![ping](https://github.com/caishanyu/notes/blob/main/images/ping.png)
 
+Ubuntu默认通过DHCP获取IP，我们可以将其设置为静态IP，避免后期IP更改
+
+![staticIP](ttps://github.com/caishanyu/notes/blob/main/images/static.png)
+
