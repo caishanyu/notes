@@ -68,8 +68,12 @@ bool atomic_compare_exchange_strong_explicit(...);
 
 // 弱版本
 bool atomic_compare_exchange_weak(volatile A* obj, C* expected, C desired);
-bool atomic_compare_exchange_weak_explicit(...);
+bool atomic_compare_exchange_weak_explicit(volatile A* obj, C* expected, C desired, memory_order succ, memory_order fail);
+
+// succ参数是比较成功时，写入操作的内存序，fail则是比较失败时加载的内存序；不带explicit的版本，两个参数默认为memory_order_seq_cst
 ```
+
+CAS的操作是：如果两者相等，那么替换为新值；否则替换为旧值
 
 其操作逻辑可以表述为
 
@@ -184,4 +188,152 @@ typedef enum memory_order {
 线程A：写原子变量（release） -> 线程B：读同一个原子变量（acquire）
 
 这样，线程A在release操作之前的所有写操作（包括非原子变量）在线程B执行acquire之后都是可见的。
+
+## Michael-Scott无锁队列算法
+
+Michael-Scott算法是1996年由Maged Michael和Michael Scott提出的经典无锁队列算法，它支持多生产者多消费者(MPMC)场景。
+
+代码：[lock_free_queue](https://github.com/caishanyu/c-corekit/blob/main/atomic/atomic_queue.c)
+
+### 状态机
+
+队列有三种基本状态：
+1. 稳定状态：`tail->next == NULL`，`tail`指向最后一个节点，`head`指向第一个节点
+2. 入队中间状态：`tail-->next != NULL`，新节点已经添加但`tail`还未更新
+3. 出队中间状态：`head != tail`，头节点已经出队，但新的`head`没有更新
+
+```mermaid
+stateDiagram-v2
+    [*] --> Stable
+    Stable --> Enqueuing: 入队开始
+    Enqueuing --> Stable: 入队完成
+    Stable --> Dequeuing: 出队开始
+    Dequeuing --> Stable: 出队完成
+    Enqueuing --> Enqueuing: 其他线程帮助
+    Dequeuing --> Dequeuing: 其他线程帮助
+```
+
+### 入/出队实现
+
+在注释中给出分析
+
+```C
+// 入队
+STATUS enqueue(LockFreeQueue *q, void *data)
+{
+    Node *new_node = NULL;
+    Node *tail = NULL;
+    Node *next = NULL;
+
+    if(!q)
+    {
+        return ERROR;
+    }
+
+    new_node = create_node(data);
+    if(!new_node)
+    {
+        return ERROR;
+    }
+
+    while(1)
+    {
+        // 1. 读取当前尾指针和它的下一个节点
+        tail = atomic_load_explicit(&q->tail, memory_order_acquire);
+        next = atomic_load_explicit(&tail->next, memory_order_acquire);
+        
+        // 2. 检查尾指针是否被其他线程修改
+        // 别的线程可能此时已完成入队
+        // head->A->B->C(tail, q->tail)->NULL(next)     读tail和next时的队列
+        // head->A->B->C(tail)->D(q->tail)->NULL        执行下面判断前一时刻
+        // 若是上述情况，重新拿tail和next，更新到最新状态
+        if (tail != atomic_load_explicit(&q->tail, memory_order_relaxed)) 
+        {
+            continue;
+        }
+        
+        // 3. 如果尾指针不是真正的尾部，帮助其他线程推进尾指针
+        // 别的线程可能此时添加了节点（修改了队尾节点next），但是没更新tail指针，即另一个线程跳过了步骤3，执行了步骤4的if，还未执行5
+        // head->A->B->C(tail, q->tail)->D(next)-> NULL 步骤2后状态
+        // 若是上述情况，CAS将q->tail更新到D，然后重新拿tail和next
+        if (next != NULL) 
+        {
+            atomic_compare_exchange_weak_explicit(&q->tail, &tail, next, memory_order_release, memory_order_relaxed);
+            continue;
+        }
+        
+        // 4. 尝试将新节点添加到尾部
+        // head->A->B->C->D(q->tail, tail)->NULL(next)，next == tail->next，判断成立
+        // 将new_node插到队尾，变成 head->A->B->C->D(q->tail, tail)->new_node(tail->next)->NULL
+        if (atomic_compare_exchange_weak_explicit(&tail->next, &next, new_node, memory_order_release, memory_order_relaxed))
+        {
+            // 5. 尝试更新尾指针到新节点
+            // head->A->B->C->D(q->tail, tail)->new_node(tail->next)
+            // q->tail == tail成立，将q->tail推进到new_node
+            atomic_compare_exchange_weak_explicit(&q->tail, &tail, new_node, memory_order_release, memory_order_relaxed);
+            return OK;
+        }
+    }
+}
+
+// 出队操作
+void* dequeue(LockFreeQueue* q) {
+    Node* head = NULL;
+    Node* tail = NULL;
+    Node* next = NULL;
+    void* data = NULL;
+
+    if(!q)
+    {
+        return NULL;
+    }
+    
+    while (1) 
+    {
+        // 1. 读取头指针、尾指针和头节点的下一个节点
+        // head(q->head)->A->B->C(q->tail, tail)->NULL(next)
+        head = atomic_load_explicit(&q->head, memory_order_acquire);
+        tail = atomic_load_explicit(&q->tail, memory_order_acquire);
+        next = atomic_load_explicit(&head->next, memory_order_acquire);
+        
+        // 2. 检查头指针是否被其他线程修改
+        // head(q->head)->A->B->C(q->tail, tail)->NULL(next)
+        if (head != atomic_load_explicit(&q->head, memory_order_relaxed)) {
+            continue;
+        }
+        
+        // 3. 队列为空的情况
+        // 对于本实现，包含一个哨兵节点，空队列即：head(q->head, q->tail, tail)->NULL(next)
+        if (head == tail) 
+        {
+            if (next == NULL) {
+                return NULL; // 队列为空
+            }
+            // 帮助推进尾指针
+            // 走到这里说明有别的线程入队，但还没有修改tail，队列此时为
+            // head(q->head, q->tail, tail)->A(next)->NULL
+            // 那么尝试将q->tail推进到next上
+            atomic_compare_exchange_weak_explicit(&q->tail, &tail, next, memory_order_release, memory_order_relaxed);
+        } 
+        else 
+        {
+            // 4. 读取数据
+            // head->A(next)->B(tail)->NULL
+            data = next->data;
+            
+            // 5. 尝试移动头指针到下一个节点
+            // head(q->head)->A(next)->B(tail)->NULL
+            // 这里相当于将A当作新的哨兵节点，data域完全不重要
+            // A(q->head)->B(q->tail)->NULL
+            if (atomic_compare_exchange_weak_explicit(&q->head, &head, next, memory_order_release, memory_order_relaxed)) 
+            {
+                // 安全释放旧头节点（实际应用中需要更安全的内存回收机制）
+                // 仅有一个线程可以进入if body，执行free
+                free(head);
+                return data;
+            }
+        }
+    }
+}
+```
 
