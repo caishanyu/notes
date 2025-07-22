@@ -124,6 +124,13 @@ C atomic_fetch_or(volatile A* obj, M operand);
 C atomic_fetch_xor(volatile A* obj, M operand);
 ```
 
+7. atomic_flag相关API
+
+```C
+// 尝试将atomic_flag的值设置为1，并返回原值
+C atomic_flag_test_and_set_explicit(PTR, MO);
+```
+
 ## 内存序
 
 在并发编程中，内存顺序（Memory Order）是控制多线程间内存操作可见性的关键机制。它定义了原子操作与非原子操作之间的顺序关系，决定了线程间如何观察内存修改。
