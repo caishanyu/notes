@@ -86,3 +86,33 @@ static void test_leak(void **state) {
 }  // 测试结束时报错：检测到内存泄漏
 ```
 
+## gcov
+
+gcov可以搭配cmocka，生成测试代码覆盖率
+
+1. 需要开启GCC编译选项`-fprofile-arcs -ftest-coverage`，链接C库`-lgcov`
+2. 确保安装gcov（通常随gcc一起安装）和lcov（`sudo apt-get install lcov`）
+3. 运行可执行文件，生成.gcov和.gcda文件，用于后续分析
+4. 具体命令可见如下脚本
+
+```bash
+#!/bin/bash
+
+echo "[enter dlist path]"
+cd obj/ds/dlist
+
+echo "[generate soft link to src files]"
+ln -s ../../../ds/dlist/dlist.c .
+
+echo "[generate dlist gcov]"
+gcov dlist.c
+
+# 收集数据
+lcov --capture --directory . --output-file coverage.info
+
+# 生成HTML
+genhtml coverage.info  --output-directory coverage_report
+
+echo "[return top path]"
+cd -
+```
